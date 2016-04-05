@@ -7,7 +7,7 @@ import wcs_utils
 
 class BaseGalaxy(object):
 
-    def __init__(self, ra, dec, z, cosmo, fluxgrid):
+    def __init__(self, ra, dec, z, cosmo, fluxgrid, dust_model):
         """Base class of galaxy models
         
         Parameters
@@ -22,6 +22,8 @@ class BaseGalaxy(object):
             cosmology to use, e.g. for calculating luminosity distance
         fluxgrid : metaldisc.fluxgrid object
             fluxgrid object specifying the line-ratio physics
+        dust_model : metaldisc.dust_model object
+            dustmodel object specifying the tauV optical depth
 
         """
 
@@ -29,6 +31,7 @@ class BaseGalaxy(object):
         self._ra = ra
         self._dec = dec
         self._fluxgrid = fluxgrid
+        self._dust_model = dust_model
         if (z < 0.):
             raise Exception("Reshift must be greater than zero")
         self._z = z
@@ -68,6 +71,11 @@ class BaseGalaxy(object):
     def fluxgrid(self):
         """Get fluxgrid used in galaxy"""
         return self._fluxgrid
+
+    @property
+    def dust_model(self):
+        """Get dust model used in galaxy"""
+        return self._dust_model
 
 
     #require subclasses to have the following attributes
@@ -367,42 +375,6 @@ class BaseGalaxy(object):
         return logZ, logU
 
 
-    def _bin_tauV(self, params):
-        """Generates dust attenuation tauV for each bin, given model parameters
-        
-        Produces an axisymmetric linear profile.
-
-        Parameters
-        ----------
-        params : dict
-            Dictionary containing the following:
-            tauV_in : float
-                V-band optical depth at galaxy centre
-            tauV_out : float
-                V-band optical depth gradient [1/kpc]
-
-        Returns
-        -------
-        tauV : array of floats
-            optical depth of each bin
-        
-        """
-        try:
-            tauV_0 = params['tauV_0']
-#            dtauV = params['dtauV']
-        except KeyError, e:
-            print "Parameter '{0}' not found".format(e.message)
-            raise
-
-#        r = self.radius / self.cosmo.arcsec_per_kpc_proper(self.z).value
-#        tauV = dtauV * r + tauV_0
-        tauV = np.full_like(self.radius, tauV_0)
-
-        tauV = np.clip(tauV, 0., None) # no negative values
-
-        return tauV
-
-
     def apply_bin_extinction(self, lines, flux, params):
         """Add dust attenuation effects to fluxes
         
@@ -427,7 +399,7 @@ class BaseGalaxy(object):
         wave = self.fluxgrid.get_wave(lines)
 
         #get tauV
-        tauV = self._bin_tauV(params)
+        tauV = self.dust_model(self, params)
         tauV = np.clip(tauV, 0., None) # no negative values
         
         # Charlot and Fall 2000 model for HII regions   (slope=1.3)
@@ -496,7 +468,8 @@ class BaseGalaxy(object):
 
 
 class GalaxyDisc(BaseGalaxy):
-    def __init__(self, ra, dec, z, pa, inc, r_max, n_annuli, cosmo, fluxgrid):  
+    def __init__(self, ra, dec, z, pa, inc, r_max, n_annuli, cosmo, fluxgrid,
+            dust_model):  
         """2D Galaxy Disc model
         
         Create a galaxy disc model with a fixed specified geometry
@@ -522,10 +495,13 @@ class GalaxyDisc(BaseGalaxy):
             cosmology to use, e.g. for calculating luminosity distance
         fluxgrid : metaldisc.fluxgrid object
             fluxgrid object specifying the line-ratio physics
+        dust_model : metaldisc.dust_model object
+            dustmodel object specifying the tauV optical depth
         
         """
        
-        super(GalaxyDisc, self).__init__(ra, dec, z, cosmo, fluxgrid)
+        super(GalaxyDisc, self).__init__(ra, dec, z, cosmo, fluxgrid,
+                                    dust_model)
 
         #protect params from being overwritten without updating geometry
         self._pa = pa
@@ -652,6 +628,20 @@ class GalaxyDisc(BaseGalaxy):
         x, y = self.project_to_sky(x, y)
         self.bin_coord = np.column_stack([x, y])
 
+    
+    def _SFR_disc(self, SFRtotal, r_d, r_max):
+        #get central normalization of SFR
+        const = (2.*np.pi*r_d) * (r_d - (np.exp(-r_max/r_d) * (r_d+r_max)))
+        SFRdensity_0 = SFRtotal / const
+
+        #exponetial disc
+        SFRdensity = SFRdensity_0 * np.exp(-self.radius/r_d) # M_sun/yr/arcsec^2
+
+        #account for bin size
+        SFR = SFRdensity * self.bin_area # M_sun/yr
+
+        return SFR
+    
 
     def bin_SFR(self, params):
         """Calculate the SFR of galaxy bins
@@ -681,23 +671,14 @@ class GalaxyDisc(BaseGalaxy):
             print "Parameter '{0}' not found".format(e.message)
             raise
 
-        r_max = self.r_max
-        #get central normalization of SFR
-        const = (2.*np.pi*r_d) * (r_d - (np.exp(-r_max/r_d) * (r_d+r_max)))
-        SFRdensity_0 = SFRtotal / const
-
-        #exponetial disc
-        SFRdensity = SFRdensity_0 * np.exp(-self.radius/r_d) # M_sun/yr/arcsec^2
-
-        #account for bin size
-        SFR = SFRdensity * self.bin_area # M_sun/yr
+        SFR = self._SFR_disc(SFRtotal, r_d, self.r_max)
 
         return SFR
 
 
 class GalaxyDiscFixedrd(GalaxyDisc):
     def __init__(self, ra, dec, z, pa, inc, r_d, r_max, n_annuli, cosmo,
-                 fluxgrid):  
+                 fluxgrid, dust_model):  
         """2D Galaxy Disc model
         
         Create a galaxy disc model with a fixed specified geometry
@@ -726,11 +707,14 @@ class GalaxyDiscFixedrd(GalaxyDisc):
             cosmology to use, e.g. for calculating luminosity distance
         fluxgrid : metaldisc.fluxgrid object
             fluxgrid object specifying the line-ratio physics
+        dust_model : metaldisc.dust_model object
+            dustmodel object specifying the tauV optical depth
         
         """
        
         super(GalaxyDiscFixedrd, self).__init__(ra, dec, z, pa, inc,
-                                            r_max, n_annuli, cosmo, fluxgrid)
+                                            r_max, n_annuli, cosmo, fluxgrid,
+                                            dust_model)
 
         #protect params from being overwritten without updating geometry
         self._r_d = r_d
@@ -771,8 +755,9 @@ class GalaxyDiscFixedrd(GalaxyDisc):
         return SFR
 
 
+
 class GalaxyMap(BaseGalaxy):
-    def __init__(self, sfrmap, ra, dec, z, pa, inc, cosmo, fluxgrid,
+    def __init__(self, sfrmap, ra, dec, z, pa, inc, cosmo, fluxgrid, dust_model,
             oversample=1):  
         """2D Galaxy model using a SFR map
         
@@ -796,12 +781,14 @@ class GalaxyMap(BaseGalaxy):
             cosmology to use, e.g. for calculating luminosity distance
         fluxgrid : metaldisc.fluxgrid object
             fluxgrid object specifying the line-ratio physics
+        dust_model : metaldisc.dust_model object
+            dustmodel object specifying the tauV optical depth
         oversample : [optional]int
             factor by which to subsample sfrmap, oversample=1 does not subsample
         
         """
 
-        super(GalaxyMap, self).__init__(ra, dec, z, cosmo, fluxgrid)
+        super(GalaxyMap, self).__init__(ra, dec, z, cosmo, fluxgrid, dust_model)
 
         
 
@@ -901,7 +888,6 @@ class GalaxyMap(BaseGalaxy):
         SFR *= (SFRtotal / np.sum(SFR))
         
         return SFR
-
 
 
 
