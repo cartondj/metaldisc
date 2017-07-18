@@ -848,7 +848,7 @@ class GalaxyMap(BaseGalaxy):
         
         #store map coords and pixel area
         self.x = x
-        self.y = x
+        self.y = y
         self.bin_area = area
         self.bin_coord = np.column_stack([x, y])
 
