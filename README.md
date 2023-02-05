@@ -1,3 +1,6 @@
+# ⚠️ This repository is no longer actively developed. <br />  Future development will continue in [this fork](https://github.com/jbrinchmann/metaldisc).
+
+
 # Forward modelling of galaxy metallicity profiles
 
 This code provides a method for recovering gas-phase metallicity gradients from integral field spectroscopic (IFS) observations of barely resolved galaxies.
